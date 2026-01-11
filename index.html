@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SINGULARITY_PRIME // AMBER_CORE</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    
+    <style>
+        :root { --neon: #ff9d00; --accent: #00f2ff; --bg: #010203; }
+        body { margin: 0; overflow: hidden; background: var(--bg); font-family: 'IBM Plex Mono', monospace; color: white; text-transform: uppercase; }
+        
+        /* Fixed Side Panel: Now completely hides off-screen */
+        #side-panel {
+            position: fixed; top: 0; left: -322px; width: 320px; height: 100%;
+            background: rgba(10, 5, 0, 0.98); border-right: 1px solid var(--neon);
+            transition: 0.6s cubic-bezier(0.85, 0, 0.15, 1); z-index: 1000; padding: 40px 30px;
+            backdrop-filter: blur(15px);
+        }
+        #side-panel.open { left: 0; }
+        
+        /* Tab is now a slim, floating trigger to minimize screen coverage */
+        #panel-toggle {
+            position: absolute; top: 50%; right: -30px; width: 30px; height: 100px;
+            background: rgba(255, 157, 0, 0.2); color: var(--neon); border: 1px solid var(--neon); 
+            cursor: pointer; writing-mode: vertical-rl; font-weight: 400; border-radius: 0 2px 2px 0;
+            transform: translateY(-50%); letter-spacing: 2px; font-size: 0.6rem;
+            transition: 0.3s; backdrop-filter: blur(5px);
+        }
+        #panel-toggle:hover { background: var(--neon); color: black; }
+
+        .header { border-bottom: 1px solid var(--neon); margin-bottom: 30px; padding-bottom: 10px; font-size: 0.8rem; letter-spacing: 5px; color: var(--neon); }
+        .control-group { margin-bottom: 25px; }
+        label { display: block; font-size: 0.55rem; color: var(--neon); margin-bottom: 10px; opacity: 0.6; }
+        input[type=range] { width: 100%; accent-color: var(--neon); background: #221100; height: 1px; cursor: pointer; appearance: none; }
+
+        /* HUD Overlays */
+        #status-ui { position: absolute; top: 40px; left: 40px; z-index: 100; pointer-events: none; }
+        #status { font-size: 0.65rem; letter-spacing: 8px; color: var(--neon); opacity: 0.8; }
+        #charge-bar { width: 200px; height: 1px; background: rgba(255, 157, 0, 0.1); margin-top: 15px; position: relative; }
+        #charge-fill { width: 0%; height: 100%; background: #fff; box-shadow: 0 0 15px var(--neon); }
+
+        #start-btn { 
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            padding: 40px 80px; background: none; color: var(--neon); border: 1px solid var(--neon);
+            cursor: pointer; z-index: 2000; font-size: 1.2rem; letter-spacing: 15px; transition: 0.5s;
+        }
+        #start-btn:hover { background: #fff; color: #000; box-shadow: 0 0 80px #fff; border-color: #fff; }
+
+        #debug-container { 
+            position: absolute; top: 40px; right: 40px; width: 160px; height: 110px; 
+            border: 1px solid rgba(255, 157, 0, 0.2); overflow: hidden;
+        }
+        #debug-canvas { width: 100%; height: 100%; transform: scaleX(-1); filter: contrast(1.4) saturate(0) brightness(1.5) sepia(1) hue-rotate(-20deg); opacity: 0.4; }
+        video { display: none; }
+
+        .instruction-overlay {
+            position: absolute; bottom: 40px; left: 40px; font-size: 0.55rem; color: rgba(255,255,255,0.3); line-height: 2.2; letter-spacing: 1px;
+        }
+        .key { color: var(--neon); margin-right: 8px; border: 1px solid rgba(255,157,0,0.3); padding: 1px 4px; }
+    </style>
+</head>
+<body>
+
+    <div id="status-ui">
+        <div id="status">NEURAL_STREAM // AMBER_STABLE</div>
+        <div id="charge-bar"><div id="charge-fill"></div></div>
+    </div>
+
+    <button id="start-btn">START_CORE</button>
+
+    <div class="instruction-overlay">
+        <span class="key">Z-AXIS</span> DISTANCE MODULATION<br>
+        <span class="key">PINCH</span> RESONANCE OVERLOAD<br>
+        <span class="key">X/Y</span> ORIENTATION FOLDING
+    </div>
+    
+    <div id="side-panel">
+        <button id="panel-toggle">DATA_CONFIG</button>
+        <div class="header">CORE_DYNAMICS</div>
+        <div class="control-group">
+            <label>THERMAL_ENTROPY</label>
+            <input type="range" id="param-entropy" min="0.5" max="5.0" step="0.1" value="2.2">
+        </div>
+        <div class="control-group">
+            <label>FRACTAL_RECURSION</label>
+            <input type="range" id="param-fold" min="4" max="16" step="1" value="12">
+        </div>
+        <div class="control-group">
+            <label>TEMPORAL_GHOSTING</label>
+            <input type="range" id="param-ghost" min="0.5" max="0.99" step="0.01" value="0.92">
+        </div>
+    </div>
+
+    <video id="webcam"></video>
+    <div id="debug-container"><canvas id="debug-canvas"></canvas></div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        let scene, camera, renderer, material, rtA, rtB;
+        let handX = 0.5, handY = 0.5, handZ = 0.1;
+        let pinchValue = 0, pinchTimer = 0, burstFactor = 0, colorCycle = 0;
+        let audioCtx, masterGain, synth, lfo;
+        
+        const config = { entropy: 2.2, fold: 12, ghost: 0.92, volume: 0.2 };
+
+        const amberFS = `
+            uniform float uTime; uniform vec2 uHandPos; uniform float uPinch;
+            uniform float uZoom; uniform float uBurst; uniform float uColor;
+            uniform float uEntropy; uniform float uFold; uniform sampler2D uPrevFrame;
+            uniform float uGhost; uniform vec2 uRes;
+
+            mat2 rot(float a) { return mat2(cos(a), sin(a), -sin(a), cos(a)); }
+
+            float map(vec3 p) {
+                p.xz *= rot(uTime * 0.1);
+                p.yz *= rot(uHandPos.x * 2.0);
+                
+                float s = 1.0;
+                for(int i = 0; i < 16; i++) {
+                    if(float(i) >= uFold) break;
+                    // Improved folding for sharper "museum" detail
+                    p = abs(p) - vec3(uEntropy, uEntropy * 0.8, uEntropy * 0.4);
+                    float r2 = dot(p,p);
+                    float m = (2.2 + uBurst * 3.0) / clamp(r2, 0.1, 1.2);
+                    p *= m; s *= m;
+                    p -= vec3(uHandPos.x, uHandPos.y, 0.3) * 1.5;
+                }
+                return length(p) / s;
+            }
+
+            void main() {
+                vec2 uv = (gl_FragCoord.xy - 0.5 * uRes.xy) / uRes.y;
+                vec4 prev = texture2D(uPrevFrame, gl_FragCoord.xy / uRes.xy);
+
+                vec3 ro = vec3(0, 0, -uZoom); 
+                vec3 rd = normalize(vec3(uv, 1.0 + uPinch * 0.5)); 
+                float d, t = 0.0, glow = 0.0;
+
+                for(int i = 0; i < 50; i++) {
+                    d = map(ro + rd * t);
+                    if(d < 0.0005 || t > 25.0) break;
+                    glow += (0.012 + uPinch * 0.1) / (d + 0.01);
+                    t += d * 0.65;
+                }
+
+                // AMBER / ORANGE PALETTE
+                vec3 c1 = vec3(1.0, 0.4, 0.0); // Deep Orange
+                vec3 c2 = vec3(1.0, 0.8, 0.1); // Bright Amber
+                vec3 c3 = vec3(1.0, 0.2, 0.0); // Molten Red
+                
+                vec3 base = (uColor < 1.0) ? mix(c1, c2, uPinch) : (uColor < 2.0 ? mix(c2, c3, uPinch) : mix(c3, c1, uPinch));
+                vec3 col = base * glow * 0.16;
+                
+                // Kinetic Heat Haze
+                if(uBurst > 0.01) col += vec3(uBurst, uBurst*0.5, 0.0) * glow * 0.5;
+
+                vec3 finalCol = mix(col, prev.rgb, uGhost);
+                gl_FragColor = vec4(finalCol, 1.0);
+            }
+        `;
+
+        async function initAI() {
+            const video = document.getElementById('webcam');
+            const hands = new window.Hands({ locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+            hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.85 });
+            
+            hands.onResults((res) => {
+                const canvas = document.getElementById('debug-canvas');
+                const ctx = canvas.getContext('2d');
+                canvas.width = res.image.width; canvas.height = res.image.height;
+                ctx.drawImage(res.image, 0,0,canvas.width, canvas.height);
+                
+                if (res.multiHandLandmarks?.[0]) {
+                    const h = res.multiHandLandmarks[0];
+                    handX = h[8].x; handY = h[8].y;
+                    const dx = h[0].x - h[9].x, dy = h[0].y - h[9].y;
+                    handZ = THREE.MathUtils.lerp(handZ, Math.sqrt(dx*dx + dy*dy), 0.2); 
+                    
+                    pinchValue = Math.hypot(h[8].x - h[4].x, h[8].y - h[4].y) < 0.038 ? 1 : 0;
+
+                    if (pinchValue === 1) {
+                        pinchTimer += 0.016; 
+                        if (synth) {
+                            synth.frequency.setTargetAtTime(60 + (pinchTimer * 600), audioCtx.currentTime, 0.1);
+                            lfo.frequency.setTargetAtTime(5 + (pinchTimer * 30), audioCtx.currentTime, 0.1);
+                        }
+                        if (pinchTimer >= 1.5) triggerBurst();
+                    } else {
+                        pinchTimer = Math.max(0, pinchTimer - 0.05);
+                        if (synth) {
+                            synth.frequency.setTargetAtTime(40 + (1.0 - handY) * 80, audioCtx.currentTime, 0.1);
+                            lfo.frequency.setTargetAtTime(2, audioCtx.currentTime, 0.2);
+                        }
+                    }
+                    document.getElementById('charge-fill').style.width = (Math.min(pinchTimer/1.5, 1) * 100) + "%";
+                }
+            });
+            new window.Camera(video, { onFrame: async () => { await hands.send({image: video}); }, width: 640, height: 480 }).start();
+        }
+
+        function triggerBurst() {
+            burstFactor = 1.0;
+            colorCycle = (colorCycle + 1) % 3;
+            pinchTimer = 0;
+
+            const osc = audioCtx.createOscillator();
+            const g = audioCtx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(10, audioCtx.currentTime + 0.8);
+            g.gain.setValueAtTime(0.4, audioCtx.currentTime);
+            g.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.8);
+            osc.connect(g).connect(audioCtx.destination);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.8);
+
+            const fade = setInterval(() => {
+                burstFactor -= 0.02;
+                if(burstFactor <= 0) { burstFactor = 0; clearInterval(fade); }
+            }, 30);
+        }
+
+        function initThree() {
+            renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            rtA = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight);
+            rtB = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight);
+
+            scene = new THREE.Scene();
+            camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+            material = new THREE.ShaderMaterial({
+                uniforms: { 
+                    uTime:{value:0}, uHandPos:{value:new THREE.Vector2(0.5,0.5)}, 
+                    uPinch:{value:0}, uZoom:{value:6.0}, uBurst:{value:0}, uColor:{value:0},
+                    uEntropy:{value:2.2}, uFold:{value:12}, uGhost:{value:0.92},
+                    uPrevFrame:{value:null}, uRes:{value:new THREE.Vector2(window.innerWidth, window.innerHeight)} 
+                },
+                vertexShader: `void main() { gl_Position = vec4(position, 1.0); }`,
+                fragmentShader: amberFS
+            });
+            scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material));
+        }
+
+        function animate(time) {
+            const targetZoom = 16.0 - (handZ * 38.0);
+            material.uniforms.uZoom.value = THREE.MathUtils.lerp(material.uniforms.uZoom.value, THREE.MathUtils.clamp(targetZoom, 1.0, 16.0), 0.1);
+            material.uniforms.uTime.value = time * 0.001;
+            material.uniforms.uHandPos.value.set(handX, handY);
+            material.uniforms.uPinch.value = pinchValue;
+            material.uniforms.uBurst.value = burstFactor;
+            material.uniforms.uColor.value = colorCycle;
+            material.uniforms.uEntropy.value = config.entropy;
+            material.uniforms.uFold.value = config.fold;
+            material.uniforms.uGhost.value = config.ghost;
+
+            material.uniforms.uPrevFrame.value = rtA.texture;
+            renderer.setRenderTarget(rtB);
+            renderer.render(scene, camera);
+            renderer.setRenderTarget(null);
+            renderer.render(scene, camera);
+
+            let temp = rtA; rtA = rtB; rtB = temp;
+            requestAnimationFrame(animate);
+        }
+
+        document.getElementById('start-btn').onclick = async (e) => {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            masterGain = audioCtx.createGain();
+            synth = audioCtx.createOscillator();
+            lfo = audioCtx.createOscillator();
+            const lfoG = audioCtx.createGain();
+            
+            synth.type = 'sawtooth'; lfo.type = 'sine';
+            lfo.frequency.value = 2; lfoG.gain.value = 25;
+            
+            lfo.connect(lfoG).connect(synth.frequency);
+            synth.connect(masterGain).connect(audioCtx.destination);
+            
+            masterGain.gain.value = config.volume;
+            synth.start(); lfo.start();
+            
+            initThree(); await initAI(); animate(); e.target.remove();
+        };
+
+        document.getElementById('panel-toggle').onclick = () => document.getElementById('side-panel').classList.toggle('open');
+        document.getElementById('param-entropy').oninput = (e) => config.entropy = parseFloat(e.target.value);
+        document.getElementById('param-fold').oninput = (e) => config.fold = parseInt(e.target.value);
+        document.getElementById('param-ghost').oninput = (e) => config.ghost = parseFloat(e.target.value);
+    </script>
+</body>
+</html>
